@@ -1,18 +1,7 @@
-const CACHE_NAME = 'sentinel-ai-v3';
-const PRECACHE_URLS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/icon.svg'
-];
+const CACHE_NAME = 'sentinel-ai-v4';
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
-  e.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_URLS).catch((err) => console.log('precache warning:', err));
-    })
-  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -29,15 +18,37 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
 
-  // External live APIs (Open Food Facts, etc.)
+  // External live APIs (Open Food Facts, Unsplash images, etc.) -> Network first with cache fallback
   if (url.origin !== self.location.origin) {
     e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
+      fetch(e.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(e.request))
     );
     return;
   }
 
-  // App internal assets: Cache-First with Stale-While-Revalidate
+  // HTML navigation requests: Always NETWORK FIRST so users instantly get latest updates!
+  if (e.request.mode === 'navigate' || e.request.destination === 'document') {
+    e.respondWith(
+      fetch(e.request)
+        .then((response) => {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone));
+          return response;
+        })
+        .catch(() => caches.match(e.request) || caches.match('./index.html') || caches.match('/sentinel-ai/index.html'))
+    );
+    return;
+  }
+
+  // JS / CSS / Assets: Cache first with Network background revalidate
   e.respondWith(
     caches.match(e.request).then((cachedResponse) => {
       const networkFetch = fetch(e.request)
@@ -50,17 +61,7 @@ self.addEventListener('fetch', (e) => {
         })
         .catch(() => null);
 
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      return networkFetch.then((netRes) => {
-        if (netRes) return netRes;
-        if (e.request.mode === 'navigate') {
-          return caches.match('/') || caches.match('/index.html');
-        }
-        return new Response('Offline', { status: 503, statusText: 'Offline' });
-      });
+      return cachedResponse || networkFetch;
     })
   );
 });
